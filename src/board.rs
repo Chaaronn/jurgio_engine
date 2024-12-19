@@ -1,40 +1,7 @@
+use crate::pieces::{Piece, PieceKind, PieceColour};
+
 
 pub const BOARD_SIZE: usize = 8;
-
-// Possible piece colours
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum PieceColour {
-    White,
-    Black,
-}
-
-impl PieceColour {
-    /// Returns the opposite colour. (e.g., White -> Black, Black -> White)
-    pub fn opposite(self) -> Self {
-        match self {
-            PieceColour::White => PieceColour::Black,
-            PieceColour::Black => PieceColour::White,
-        }
-    }
-}
-
-/// Represents the different kinds of chess pieces (e.g., Pawn, Knight).
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum PieceKind {
-    Pawn,
-    Knight,
-    Bishop,
-    Rook,
-    Queen,
-    King,
-}
-
-/// Represents a chess piece with its kind and colour.
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub struct Piece {
-    pub kind: PieceKind,
-    pub colour: PieceColour,
-}
 
 /// Represents a single square on the chessboard.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -189,6 +156,21 @@ impl BoardState {
         }
         println!("  a b c d e f g h");
     }
+
+    /*
+    // Fen handling
+
+    /// Parses a FEN string to initialize the board.
+    pub fn from_fen(fen: &str) -> Result<Self, &'static str> {
+        // Parse the FEN string into a BoardState.
+        // Handle errors for invalid FEN strings.
+    }
+
+    /// Converts the board state back to a FEN string.
+    pub fn to_fen(&self) -> String {
+        // Generate the FEN representation of the current board state.
+    }
+    */
 }
 
 
@@ -205,7 +187,7 @@ mod tests {
         let queen = PieceKind::Queen;
         let king = PieceKind::King;
 
-        assert_eq!(pawn as usize, 0); // or any relevant test
-        assert_eq!(king as usize, 5); // or any relevant test
+        assert_eq!(pawn as usize, 0);
+        assert_eq!(king as usize, 5);
     }
 }

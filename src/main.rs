@@ -1,6 +1,9 @@
 use board::BoardState;
 
 mod board;
+mod pieces;
+mod game_logic;
+mod moves;
 
 fn main() {
 
