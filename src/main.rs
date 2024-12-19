@@ -1,3 +1,10 @@
+use board::BoardState;
+
+mod board;
+
 fn main() {
-    println!("Hello, world!");
+
+    let board = BoardState::new();
+
+    board.print_board();
 }
