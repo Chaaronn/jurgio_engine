@@ -1,4 +1,6 @@
 use board::BoardState;
+use tracing::{info, span, Level};
+use tracing_subscriber;
 
 mod board;
 mod pieces;
@@ -7,7 +9,11 @@ mod moves;
 
 fn main() {
 
-    let board = BoardState::new();
+    tracing_subscriber::fmt()
+        .with_max_level(Level::INFO) // Set log level
+        .init();
 
-    board.print_board();
+    //let board = BoardState::new();
+
+    //board.print_board();
 }
