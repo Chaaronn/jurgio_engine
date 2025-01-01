@@ -1,826 +1,482 @@
-use crate::board::{BoardState, Square};
-use crate::board::BOARD_SIZE;
-use crate::pieces::{Piece, PieceKind, PieceColour};
-use tracing::{info, span, Level, debug, error};
+use crate::board::{BoardState, BitBoard};
+use crate::pieces::{PieceColour, PieceKind};
+use tracing;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct ChessMove {
-    pub from: (usize, usize),
-    pub to: (usize, usize),
-    pub promotion: Option<PieceKind>, // Optional promotion for pawns.
+    pub from: usize, // Single index (0-63)
+    pub to: usize,   // Single index (0-63)
+    pub promotion: Option<PieceKind>,
 }
 
 impl BoardState {
-    /// Applies a move to the board. Returns `Err` if the move is invalid.
-    pub fn apply_move(&mut self, chess_move: ChessMove, last_move: Option<ChessMove>) -> Result<(), String> {
-        let (from_row, from_col) = chess_move.from;
-        let (to_row, to_col) = chess_move.to;
-    
-        debug!(
-            "Attempting to apply move: {:?} with last move: {:?}",
-            chess_move, last_move
-        );
-        debug!("Last move passed to valid_moves: {:?}", last_move);
-    
-        // Validate move
-        let valid_moves = self.valid_moves(from_row, from_col, last_move);
-        debug!("Generated valid moves for ({}, {}): {:?}", from_row, from_col, valid_moves);
-    
-        if !valid_moves.iter().any(|m| m.to == (to_row, to_col) && m.promotion == chess_move.promotion) {
-            error!(
-                "Move validation failed: {:?}. Valid moves: {:?}",
-                chess_move, valid_moves
-            );
-            return Err("Invalid move".to_string());
-        }
-    
-        // Move the piece
-        let moving_piece = self.board[from_row][from_col];
-        debug!(
-            "Moving piece {:?} from ({}, {}) to ({}, {})",
-            moving_piece, from_row, from_col, to_row, to_col
-        );
-        self.board[to_row][to_col] = moving_piece;
-        self.clear_square(from_row, from_col);
-    
-        // Handle en passant
-        if let Some(last_move) = last_move {
-            let (last_to_row, last_to_col) = last_move.to;
-        
-            // Check if the current move is an en passant capture
-            if let Square::Full(piece) = moving_piece {
-                if piece.kind == PieceKind::Pawn
-                    && (from_row as isize - to_row as isize).abs() == 1
-                    && (from_col as isize - to_col as isize).abs() == 1
-                    && self.board[to_row][to_col] == Square::Empty
-                {
-                    // Ensure last move was a double move by the opponent's pawn
-                    if let Square::Full(last_piece) = self.board[last_to_row][last_to_col] {
-                        if last_piece.kind == PieceKind::Pawn
-                            && last_piece.colour != piece.colour
-                            && (last_to_row as isize - last_move.from.0 as isize).abs() == 2
-                            && last_to_col == to_col
-                        {
-                            let captured_pawn_row = if piece.colour == PieceColour::White {
-                                to_row + 1
-                            } else {
-                                to_row - 1
-                            };
-                            debug!(
-                                "En passant capture: clearing captured pawn at ({}, {}).",
-                                captured_pawn_row, to_col
-                            );
-                            self.clear_square(captured_pawn_row, to_col);
-                        }
-                    }
-                }
-            }
-        }
-
-    
-        // Handle promotion
-        if let Some(promotion_kind) = chess_move.promotion {
-            debug!(
-                "Handling promotion for move: {:?}, promoting to {:?}",
-                chess_move, promotion_kind
-            );
-    
-            if to_row == 0 || to_row == BOARD_SIZE - 1 {
-                if let Square::Full(piece) = self.board[to_row][to_col] {
-                    if piece.kind == PieceKind::Pawn {
-                        self.board[to_row][to_col] = Square::Full(Piece {
-                            kind: promotion_kind,
-                            colour: piece.colour,
-                        });
-                        debug!(
-                            "Promotion applied: Pawn at ({}, {}) promoted to {:?}",
-                            to_row, to_col, promotion_kind
-                        );
-                    } else {
-                        return Err("Only pawns can be promoted".to_string());
-                    }
-                }
-            } else {
-                return Err("Promotion only allowed on the last rank".to_string());
-            }
-        }
-    
-        debug!(
-            "Move applied successfully: {:?}, board state after move:\n{:?}",
-            chess_move, self.board
-        );
-    
-        // Update turn
-        self.switch_turn();
-        debug!("Turn updated. Next turn: {:?}", self.to_move);
-        Ok(())
-    }
-    
-    
-    /// Generates all valid moves for a piece at a given position.
-    pub fn valid_moves(&self, row: usize, col: usize, last_move: Option<ChessMove>) -> Vec<ChessMove> {
+    /// Generates all valid moves for the current player.
+    pub fn generate_moves(&mut self) -> Vec<ChessMove> {
         let mut moves = Vec::new();
-        debug!(
-            "Valid moves calculation started for piece at ({}, {}). Last move: {:?}",
-            row, col, last_move
-        );
-    
-        if let Square::Full(piece) = self.board[row][col] {
-            if piece.colour != self.to_move {
-                debug!(
-                    "Piece at ({}, {}) does not match current turn colour {:?}. No moves generated.",
-                    row, col, self.to_move
-                );
-                return moves;
-            }
 
-            if piece.kind == PieceKind::Pawn {
-                let direction = if piece.colour == PieceColour::White { -1 } else { 1 };
-                if let Some(last_move) = last_move {
-                    let (last_from_row, _last_from_col) = last_move.from;
-                    let (last_to_row, last_to_col) = last_move.to;
-            
-                    // Fetch the piece at the destination of the last move
-                    if let Square::Full(last_piece) = self.board[last_to_row][last_to_col] {
-                        if last_from_row as isize - last_to_row as isize == 2 * direction
-                            && last_piece.kind == PieceKind::Pawn
-                            && (last_to_col as isize - col as isize).abs() == 1
-                        {
-                            // Add en passant move
-                            moves.push(ChessMove {
-                                from: (row, col),
-                                to: ((last_to_row as isize + direction) as usize, last_to_col),
-                                promotion: None,
-                            });
-                            debug!(
-                                "En passant move added for pawn at ({}, {}) to ({}, {}).",
-                                row, col, (last_to_row as isize + direction) as usize, last_to_col
-                            );
-                        }
-                    }
-                }
+        match self.to_move {
+            PieceColour::White => {
+                let white_pieces = self.all_white; // Copy the bitboard
+                self.generate_colour_moves(&white_pieces, &mut moves);
             }
-    
-            match piece.kind {
-                PieceKind::Pawn => {
-                    debug!("Calculating pawn moves for piece at ({}, {})", row, col);
-                    self.pawn_moves(row, col, piece, &mut moves, last_move);
-                }
-                PieceKind::Rook => self.rook_moves(row, col, piece, &mut moves),
-                PieceKind::Knight => self.knight_moves(row, col, piece, &mut moves),
-                PieceKind::Bishop => self.bishop_moves(row, col, piece, &mut moves),
-                PieceKind::Queen => {
-                    self.rook_moves(row, col, piece, &mut moves);
-                    self.bishop_moves(row, col, piece, &mut moves);
-                }
-                PieceKind::King => self.king_moves(row, col, piece, &mut moves),                
+            PieceColour::Black => {
+                let black_pieces = self.all_black; // Copy the bitboard
+                self.generate_colour_moves(&black_pieces, &mut moves);
             }
-        } else {
-            debug!(
-                "No piece found at ({}, {}). No moves generated.",
-                row, col
-            );
         }
-    
-        debug!("Valid moves for ({}, {}): {:?}", row, col, moves);
+
         moves
     }
-    
-    
 
-    /// Adds valid pawn moves to the moves list.
-    fn pawn_moves(
-        &self,
-        row: usize,
-        col: usize,
-        piece: Piece,
-        moves: &mut Vec<ChessMove>,
-        last_move: Option<ChessMove>,
-    ) {
-        let forward = if piece.colour == PieceColour::White { -1 } else { 1 };
-
-        // Forward move.
-        if row as isize + forward >= 0 && row as isize + forward < BOARD_SIZE as isize {
-            let target_row = (row as isize + forward) as usize;
-            debug!(
-                "Checking forward for pawn at ({}, {}): target_row = {}, target_col = {}",
-                row, col, target_row, col
-            );
-
-            // promotion for forward moves
-            if let Square::Empty = self.board[target_row][col] {
-                
-                debug!("Pawn ({:?}) at ({}, {}) considers forward move to ({}, {})", piece.colour, row, col, target_row, col);
-
-                if (piece.colour == PieceColour::White && target_row == 0)
-                    || (piece.colour == PieceColour::Black && target_row == BOARD_SIZE - 1)
-                {
-                    debug!(
-                        "Adding promotion moves for pawn at ({}, {}): target_row = {}",
-                        row, col, target_row
-                    );
-                    // Loop through possible promotion pieces to add
-                    for &promotion_kind in &[PieceKind::Queen, PieceKind::Rook, PieceKind::Bishop, PieceKind::Knight] {
-                        
-                        debug!(
-                            "Adding promotion move for pawn at ({}, {}): target_row = {}, promotion_kind = {:?}",
-                            row, col, target_row, promotion_kind
-                        );
-                        
-                        moves.push(ChessMove {
-                            from: (row, col),
-                            to: (target_row, col),
-                            promotion: Some(promotion_kind),
-                        });
+    /// Generate moves for a specific color.
+    fn generate_colour_moves(&mut self, pieces: &BitBoard, moves: &mut Vec<ChessMove>) {
+        tracing::debug!("All white bitboard: {:064b}", self.all_white.0);
+        for square in pieces.iter() {
+            tracing::debug!("Iterating square: {}", square);
+            if let Some(piece) = self.piece_at(square) {
+                tracing::debug!("Processing piece: {:?} at square {}", piece, square);
+                if piece.colour == self.to_move {
+                    match piece.kind {
+                        PieceKind::Pawn => self.generate_pawn_moves(square, piece.colour, moves),
+                        PieceKind::Knight => self.generate_knight_moves(square, moves),
+                        PieceKind::Bishop => self.generate_bishop_moves(square, moves),
+                        PieceKind::Rook => self.generate_rook_moves(square, moves),
+                        PieceKind::Queen => self.generate_queen_moves(square, moves),
+                        PieceKind::King => self.generate_king_moves(square, moves),
                     }
-                } else {
-                    // No promotion moves, so add the normal one
-                    debug!("Pawn at ({}, {}) adds forward move to ({}, {})", row, col, target_row, col);
+                }
+            }
+        }
+    }
+
+    /// Generate pawn moves, including promotions and en passant.
+    fn generate_pawn_moves(&mut self, square: usize, colour: PieceColour, moves: &mut Vec<ChessMove>) {
+        let direction = if colour == PieceColour::White { 8 } else { -8 };
+        let forward = square as isize + direction;
+
+        // Single forward move
+        if forward >= 0 && forward < 64 && !self.all_pieces.is_set(forward as usize) {
+            moves.push(ChessMove {
+                from: square,
+                to: forward as usize,
+                promotion: self.promotion_check(forward as usize, colour),
+            });
+
+            // Double forward move from starting rank
+            if self.is_pawn_starting_rank(square, colour) {
+                let double_forward = square as isize + 2 * direction;
+                if double_forward >= 0 && double_forward < 64 && !self.all_pieces.is_set(double_forward as usize) {
+                    tracing::debug!(
+                        "Checking two-square move for pawn at {}: direction={} double_forward={}",
+                        square,
+                        direction,
+                        double_forward
+                    );
+
                     moves.push(ChessMove {
-                        from: (row, col),
-                        to: (target_row, col),
+                        from: square,
+                        to: double_forward as usize,
+                        promotion: None,
+                    });
+            
+                    // Set en passant square for the opponent only on a valid two-square move
+                    self.en_passant_square = Some((square as isize + direction) as usize);
+                    tracing::debug!("Set en_passant_square={:?}", self.en_passant_square);
+                }
+            }
+        }
+
+        // Captures
+        let capture_offsets = if colour == PieceColour::White { [-9, -7] } else { [7, 9] };
+        for &offset in &capture_offsets {
+            let target = square as isize + offset;
+
+            // Standard capture
+            if target >= 0
+                && target < 64
+                && self.all_pieces.is_set(target as usize)
+                && self.is_opponent_piece(target as usize, colour)
+            {
+                moves.push(ChessMove {
+                    from: square,
+                    to: target as usize,
+                    promotion: self.promotion_check(target as usize, colour),
+                });
+            }
+
+            // En passant capture
+            if let Some(ep_square) = self.en_passant_square {
+                if (square == ep_square - 9 || square == ep_square - 7 || // White pawn capture
+                    square == ep_square + 9 || square == ep_square + 7) { // Black pawn capture
+                    moves.push(ChessMove {
+                        from: square,
+                        to: ep_square,
+                        promotion: None,
+                    });
+                    tracing::debug!("Generated en passant move from {} to {}", square, ep_square);
+                } else {
+                    tracing::debug!(
+                        "Skipped en passant for square {}: no legal pawn to capture ep_square={}",
+                        square,
+                        ep_square
+                    );
+                }
+            }
+
+            
+            
+        }
+    }
+
+    /// Check if a square contains an opponent's piece.
+    fn is_opponent_piece(&self, square: usize, colour: PieceColour) -> bool {
+        match colour {
+            PieceColour::White => self.all_black.is_set(square),
+            PieceColour::Black => self.all_white.is_set(square),
+        }
+    }
+
+    /// Determine if a pawn is on its starting rank.
+    fn is_pawn_starting_rank(&self, square: usize, colour: PieceColour) -> bool {
+        match colour {
+            PieceColour::White => (8..16).contains(&square),
+            PieceColour::Black => (48..56).contains(&square),
+        }
+    }
+
+    /// Check if a pawn move results in promotion.
+    fn promotion_check(&self, square: usize, colour: PieceColour) -> Option<PieceKind> {
+        match colour {
+            PieceColour::White if square < 8 => Some(PieceKind::Queen),
+            PieceColour::Black if square >= 56 => Some(PieceKind::Queen),
+            _ => None,
+        }
+    } 
+    
+    /// Generate knight moves.
+    fn generate_knight_moves(&self, square: usize, moves: &mut Vec<ChessMove>) {
+    
+        let offsets = [17, 15, 10, 6, -17, -15, -10, -6];
+        let rank = (square / 8) as isize; // Current rank (0 to 7)
+        let file = (square % 8) as isize; // Current file (0 to 7)
+    
+        for &offset in &offsets {
+            let target = square as isize + offset;
+    
+            // Check if target is on the board
+            if target >= 0 && target < 64 {
+                let target_rank = target / 8;
+                let target_file = target % 8;
+    
+                // Validate file difference for wrapping prevention
+                let file_diff = (target_file - file).abs();
+                tracing::debug!(
+                    target,
+                    target_rank,
+                    target_file,
+                    file_diff,
+                    "Calculating knight move"
+                );
+    
+                // Ensure the move stays within valid ranks and files
+                if (offset.abs() == 17 || offset.abs() == 15) && file_diff == 1
+                    || (offset.abs() == 10 || offset.abs() == 6) && file_diff == 2
+                {
+                    tracing::debug!(from = square, to = target, "Adding knight move");
+                    moves.push(ChessMove {
+                        from: square,
+                        to: target as usize,
                         promotion: None,
                     });
                 }
-
-                // Double move from starting rank.
-                let starting_rank = if piece.colour == PieceColour::White { 6 } else { 1 };
-                if row == starting_rank {
-                    
-                    let double_row = (row as isize + forward * 2) as usize;
-                    if let Square::Empty = self.board[double_row][col] {
-                        debug!("Pawn at ({}, {}) adds double move to ({}, {})", row, col, double_row, col);
-                        moves.push(ChessMove {
-                            from: (row, col),
-                            to: (double_row, col),
-                            promotion: None,
-                        });
-                    }
-                }
-            } else {
-                debug!("Pawn at ({}, {}) cannot move forward, square ({}, {}) is occupied", row, col, target_row, col);
-            }
-        }
-
-        // Captures.
-        for &col_offset in &[-1, 1] {
-            if col as isize + col_offset >= 0 && col as isize + col_offset < BOARD_SIZE as isize {
-                let target_col = (col as isize + col_offset) as usize;
-                let target_row = (row as isize + forward) as usize;
-
-                if let Square::Full(target_piece) = self.board[target_row][target_col] {
-                    if target_piece.colour != piece.colour {
-                        debug!(
-                            "Pawn at ({}, {}) captures opponent's piece at ({}, {})",
-                            row, col, target_row, target_col
-                        );
-
-                        // promotion
-                        if (piece.colour == PieceColour::White && target_row == 0)
-                            || (piece.colour == PieceColour::Black && target_row == BOARD_SIZE - 1)
-                        {
-                            for &promotion_kind in &[PieceKind::Queen, PieceKind::Rook, PieceKind::Bishop, PieceKind::Knight] {
-                                moves.push(ChessMove {
-                                    from: (row, col),
-                                    to: (target_row, col),
-                                    promotion: Some(promotion_kind),
-                                });
-                            }
-                        } else {
-                            debug!("Pawn at ({}, {}) adds capture move to ({}, {})", row, col, target_row, target_col);
-                            moves.push(ChessMove {
-                                from: (row, col),
-                                to: (target_row, target_col),
-                                promotion: None,
-                            });
-                        }
-                    }
-                } else {
-                    debug!("Pawn at ({}, {}) cannot capture at ({}, {}), square is empty", row, col, target_row, target_col);
-                }
-
-                // Check for en passant
-                if let Some(last_move) = last_move {
-                    if let Square::Full(last_piece) = self.board[last_move.to.0][last_move.to.1] {
-                        if last_piece.kind == PieceKind::Pawn
-
-                            && last_piece.colour != piece.colour
-                            && (last_move.from.0 as isize - last_move.to.0 as isize).abs() == 2
-                            && (last_move.to.1 as isize - col as isize).abs() == 1
-                        {
-                            let en_passant_row = (row as isize + forward) as usize;
-                            moves.push(ChessMove {
-                                from: (row, col),
-                                to: (en_passant_row, last_move.to.1),
-                                promotion: None,
-                            });
-                        }
-                    }
-                }
             }
         }
     }
 
+    /// Generate bishop moves.
+    fn generate_bishop_moves(&self, square: usize, moves: &mut Vec<ChessMove>) {
+        self.generate_sliding_moves(square, &[9, 7, -9, -7], moves);
+    }
 
-    /// Adds valid rook moves to the moves list.
-    fn rook_moves(
-        &self,
-        row: usize,
-        col: usize,
-        piece: Piece,
-        moves: &mut Vec<ChessMove>,
-    ) {
-        let directions = [(1, 0), (-1, 0), (0, 1), (0, -1)]; // Up, down, right, left
+    /// Generate rook moves.
+    fn generate_rook_moves(&self, square: usize, moves: &mut Vec<ChessMove>) {
+        self.generate_sliding_moves(square, &[8, -8, 1, -1], moves);
+    }
+
+    /// Generate queen moves (combining rook and bishop).
+    fn generate_queen_moves(&self, square: usize, moves: &mut Vec<ChessMove>) {
+        self.generate_sliding_moves(square, &[9, 7, -9, -7, 8, -8, 1, -1], moves);
+    }
+
+    /// Generate king moves.
+    fn generate_king_moves(&self, square: usize, moves: &mut Vec<ChessMove>) {
+        for &offset in &[9, 7, -9, -7, 8, -8, 1, -1] {
+            let target = (square as isize + offset) as usize;
+            if target < 64 && (!self.all_pieces.is_set(target) || self.is_opponent_piece(target, self.to_move)) {
+                moves.push(ChessMove {
+                    from: square,
+                    to: target,
+                    promotion: None,
+                });
+            }
+        }
     
-        for (dr, dc) in directions {
-            let mut r = row as isize;
-            let mut c = col as isize;
+        // Add castling logic
+        if self.can_castle_kingside(self.to_move) {
+            let (king_from, king_to) = match self.to_move {
+                PieceColour::White => (4, 6),
+                PieceColour::Black => (60, 62),
+            };
+            if self.is_square_safe(king_from)
+                && self.is_square_safe(king_from + 1)
+                && self.is_square_safe(king_from + 2)
+            {
+                moves.push(ChessMove {
+                    from: king_from,
+                    to: king_to,
+                    promotion: None,
+                });
+            }
+        }
     
-            debug!("Rook starting direction dr: {}, dc: {}", dr, dc);
-    
-            loop {
-                r += dr;
-                c += dc;
-    
-                if r < 0 || r >= BOARD_SIZE as isize || c < 0 || c >= BOARD_SIZE as isize {
-                    debug!("Rook out of bounds at r: {}, c: {}", r, c);
-                    break; // Out of bounds
-                }
-    
-                let target_row = r as usize;
-                let target_col = c as usize;
-    
-                debug!("Rook considering move to ({}, {})", target_row, target_col);
-    
-                match self.board[target_row][target_col] {
-                    Square::Empty => {
-                        debug!("Square ({}, {}) is empty, adding Rook move", target_row, target_col);
-                        moves.push(ChessMove {
-                            from: (row, col),
-                            to: (target_row, target_col),
-                            promotion: None,
-                        });
-                    }
-                    Square::Full(target_piece) => {
-                        if target_piece.colour != piece.colour {
-                            debug!(
-                                "Square ({}, {}) has opponent's piece, adding Rook capture move",
-                                target_row, target_col
-                            );
-                            moves.push(ChessMove {
-                                from: (row, col),
-                                to: (target_row, target_col),
-                                promotion: None,
-                            });
-                        } else {
-                            debug!(
-                                "Square ({}, {}) has friendly piece, Rook stopping in this direction",
-                                target_row, target_col
-                            );
-                        }
-                        break; // Stop if a piece is encountered
-                    }
-                }
+        if self.can_castle_queenside(self.to_move) {
+            let (king_from, king_to) = match self.to_move {
+                PieceColour::White => (4, 2),
+                PieceColour::Black => (60, 58),
+            };
+            if self.is_square_safe(king_from)
+                && self.is_square_safe(king_from - 1)
+                && self.is_square_safe(king_from - 2)
+            {
+                moves.push(ChessMove {
+                    from: king_from,
+                    to: king_to,
+                    promotion: None,
+                });
             }
         }
     }
     
+    
 
-    /// Adds valid bishop moves to the moves list.
-    fn bishop_moves(
-        &self,
-        row: usize,
-        col: usize,
-        piece: Piece,
-        moves: &mut Vec<ChessMove>,
-    ) {
-        let directions = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
-    
-        for (dr, dc) in directions {
-            let mut r = row as isize;
-            let mut c = col as isize;
-    
-            debug!(
-                "Bishop starting from ({}, {}) in direction ({}, {})",
-                row, col, dr, dc
-            );
-    
-            loop {
-                r += dr;
-                c += dc;
-    
-                if r < 0 || r >= BOARD_SIZE as isize || c < 0 || c >= BOARD_SIZE as isize {
-                    debug!("Out of bounds at r: {}, c: {}", r, c);
+    /// Helper for sliding piece moves (bishop, rook, queen).
+    fn generate_sliding_moves(&self, square: usize, directions: &[isize], moves: &mut Vec<ChessMove>) {
+        for &direction in directions {
+            let mut target = square as isize + direction;
+            while target >= 0 && target < 64 {
+                let target_usize = target as usize;
+                if self.all_pieces.is_set(target_usize) {
+                    if self.is_opponent_piece(target_usize, self.to_move) {
+                        moves.push(ChessMove {
+                            from: square,
+                            to: target_usize,
+                            promotion: None,
+                        });
+                    }
                     break;
                 }
-    
-                let target_row = r as usize;
-                let target_col = c as usize;
-    
-                debug!(
-                    "Bishop considering move to ({}, {}), direction ({}, {})",
-                    target_row, target_col, dr, dc
-                );
-    
-                match self.board[target_row][target_col] {
-                    Square::Empty => {
-                        debug!("Square ({}, {}) is empty, adding Bishop move", target_row, target_col);
-                        moves.push(ChessMove {
-                            from: (row, col),
-                            to: (target_row, target_col),
-                            promotion: None,
-                        });
-                    }
-                    Square::Full(target_piece) => {
-                        if target_piece.colour != piece.colour {
-                            debug!(
-                                "Square ({}, {}) has opponent's piece, adding Bishop capture move",
-                                target_row, target_col
-                            );
-                            moves.push(ChessMove {
-                                from: (row, col),
-                                to: (target_row, target_col),
-                                promotion: None,
-                            });
-                        } else {
-                            debug!(
-                                "Square ({}, {}) has friendly piece, Bishop stopping in this direction",
-                                target_row, target_col
-                            );
-                        }
-                        break; // Stop at the first occupied square
-                    }
-                }
+                moves.push(ChessMove {
+                    from: square,
+                    to: target_usize,
+                    promotion: None,
+                });
+                target += direction;
             }
         }
     }
 
-    /// Adds valid knight moves to the moves list.
-    fn knight_moves(
-        &self,
-        row: usize,
-        col: usize,
-        piece: Piece,
-        moves: &mut Vec<ChessMove>,
-    ) {
-        let moveset = [
-            (2, 1), (2, -1), (-2, 1), (-2, -1),
-            (1, 2), (1, -2), (-1, 2), (-1, -2),
-        ];
-
-        for (dr, dc) in moveset {
-            let r = row as isize + dr;
-            let c = col as isize + dc;
-
-            if r >= 0 && r < BOARD_SIZE as isize && c >= 0 && c < BOARD_SIZE as isize {
-                let target_row = r as usize;
-                let target_col = c as usize;
-
-                match self.board[target_row][target_col] {
-                    Square::Empty => moves.push(ChessMove {
-                        from: (row, col),
-                        to: (target_row, target_col),
-                        promotion: None,
-                    }),
-                    Square::Full(target_piece) => {
-                        if target_piece.colour != piece.colour {
-                            moves.push(ChessMove {
-                                from: (row, col),
-                                to: (target_row, target_col),
-                                promotion: None,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Adds valid king moves to the moves list.
-    fn king_moves(
-        &self,
-        row: usize,
-        col: usize,
-        piece: Piece,
-        moves: &mut Vec<ChessMove>,
-    ) {
-        let moveset = [
-            (1, 0), (-1, 0), (0, 1), (0, -1), // Cardinal directions.
-            (1, 1), (1, -1), (-1, 1), (-1, -1), // Diagonals.
-        ];
-    
-        debug!("Calculating king moves for King at ({}, {})", row, col);
-    
-        for (dr, dc) in moveset {
-            let r = row as isize + dr;
-            let c = col as isize + dc;
-    
-            if r >= 0 && r < BOARD_SIZE as isize && c >= 0 && c < BOARD_SIZE as isize {
-                let target_row = r as usize;
-                let target_col = c as usize;
-    
-                debug!("Evaluating move to ({}, {})", target_row, target_col);
-    
-                match self.board[target_row][target_col] {
-                    Square::Empty => {
-                        debug!("Square ({}, {}) is empty, adding King move", target_row, target_col);
-                        moves.push(ChessMove {
-                            from: (row, col),
-                            to: (target_row, target_col),
-                            promotion: None,
-                        });
-                    }
-                    Square::Full(target_piece) => {
-                        if target_piece.colour != piece.colour {
-                            debug!(
-                                "Square ({}, {}) has opponent's piece, adding King capture move",
-                                target_row, target_col
-                            );
-                            moves.push(ChessMove {
-                                from: (row, col),
-                                to: (target_row, target_col),
-                                promotion: None,
-                            });
-                        } else {
-                            debug!(
-                                "Square ({}, {}) has friendly piece, cannot move there",
-                                target_row, target_col
-                            );
-                        }
-                    }
-                }
-            } else {
-                debug!("Move to ({}, {}) is out of bounds", r, c);
-            }
-        }
-    }
-    
-    
 }
+
 
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::board::BoardState;
+    use crate::pieces::{PieceColour, PieceKind};
     use tracing_subscriber;
 
     fn init() {
         let _ = tracing_subscriber::fmt::try_init();
     }
 
-    #[test]
-    fn test_apply_move_basic() {
-        init();
-        let mut board = BoardState::new();
-
-        // Move a white pawn from e2 to e4.
-        let chess_move = ChessMove {
-            from: (6, 4), // e2
-            to: (4, 4),   // e4
-            promotion: None,
-        };
-
-        assert!(board.apply_move(chess_move, None).is_ok());
-        assert!(matches!(board.board[4][4], Square::Full(Piece { kind: PieceKind::Pawn, colour: PieceColour::White })));
-        assert!(matches!(board.board[6][4], Square::Empty));
-    }
 
     #[test]
-    fn test_apply_move_invalid_source() {
+    fn test_pawn_moves_white() {
         init();
         let mut board = BoardState::new();
+        let moves = board.generate_moves();
 
-        // Try to move a piece from an empty square.
-        let chess_move = ChessMove {
-            from: (4, 4), // Empty square
-            to: (3, 4),
+        // Test single pawn move forward
+        assert!(moves.contains(&ChessMove {
+            from: 8, // a2
+            to: 16,  // a3
             promotion: None,
-        };
+        }));
 
-        assert!(board.apply_move(chess_move, None).is_err());
-    }
-
-    #[test]
-    fn test_pawn_double_move() {
-        init();
-        let mut board = BoardState::new();
-
-        // White pawn double move from e2 to e4.
-        let chess_move = ChessMove {
-            from: (6, 4), // e2
-            to: (4, 4),   // e4
+        // Test double pawn move from starting position
+        assert!(moves.contains(&ChessMove {
+            from: 8, // a2
+            to: 24,  // a4
             promotion: None,
-        };
-
-        assert!(board.apply_move(chess_move, None).is_ok());
-        assert!(matches!(board.board[4][4], Square::Full(Piece { kind: PieceKind::Pawn, colour: PieceColour::White })));
-        assert!(matches!(board.board[6][4], Square::Empty));
-    }
-
-    #[test]
-    fn test_pawn_promotion() {
-        init();
-        let mut board = BoardState::new();
-
-        // Place a white pawn on e7.
-        board.board[1][4] = Square::Full(Piece {
-            kind: PieceKind::Pawn,
-            colour: PieceColour::White,
-        });
-
-        // Promote the pawn to a queen.
-        let chess_move = ChessMove {
-            from: (1, 4), // e7
-            to: (0, 4),   // e8
-            promotion: Some(PieceKind::Queen),
-        };
-
-        assert!(board.apply_move(chess_move, None).is_ok());
-        assert!(matches!(board.board[0][4], Square::Full(Piece { kind: PieceKind::Queen, colour: PieceColour::White })));
-
-        // Invalid promotion: no promotion specified
-        let invalid_promotion = ChessMove {
-            from: (1, 4),
-            to: (0, 4),
-            promotion: None,
-        };
-        assert!(board.apply_move(invalid_promotion, None).is_err());
-    }
-
-
-
-    #[test]
-    fn test_pawn_capture() {
-        init();
-        let mut board = BoardState::new();
-
-        // Place a white pawn on e4 and a black pawn on d5.
-        board.board[4][4] = Square::Full(Piece {
-            kind: PieceKind::Pawn,
-            colour: PieceColour::White,
-        });
-        board.board[3][3] = Square::Full(Piece {
-            kind: PieceKind::Pawn,
-            colour: PieceColour::Black,
-        });
-
-        // White pawn captures black pawn.
-        let chess_move = ChessMove {
-            from: (4, 4), // e4
-            to: (3, 3),   // d5
-            promotion: None,
-        };
-
-        assert!(board.apply_move(chess_move, None).is_ok());
-        assert!(matches!(board.board[3][3], Square::Full(Piece { kind: PieceKind::Pawn, colour: PieceColour::White })));
-        assert!(matches!(board.board[4][4], Square::Empty));
-    }
-
-    #[test]
-    fn test_en_passant() {
-        init();
-        let mut board = BoardState::new();
-    
-        // Set up en passant scenario.
-        board.board[4][4] = Square::Full(Piece {
-            kind: PieceKind::Pawn,
-            colour: PieceColour::White,
-        });
-        board.board[6][3] = Square::Full(Piece {
-            kind: PieceKind::Pawn,
-            colour: PieceColour::Black,
-        });
-    
-        // Black pawn performs a double move.
-        let black_double_move = ChessMove {
-            from: (6, 3),
-            to: (4, 3),
-            promotion: None,
-        };
-        assert!(board.apply_move(black_double_move, None).is_ok());
-        assert!(matches!(
-            board.board[4][3],
-            Square::Full(Piece { kind: PieceKind::Pawn, colour: PieceColour::Black })
-        ));
-    
-        // Verify en passant is valid.
-        let valid_moves = board.valid_moves(4, 4, Some(black_double_move));
-        assert!(valid_moves.iter().any(|m| m.to == (5, 3)), "En passant move not generated.");
-    
-        // Perform en passant capture.
-        let en_passant_move = ChessMove {
-            from: (4, 4),
-            to: (5, 3),
-            promotion: None,
-        };
-        assert!(board.apply_move(en_passant_move, Some(black_double_move)).is_ok());
-        assert!(matches!(
-            board.board[5][3],
-            Square::Full(Piece { kind: PieceKind::Pawn, colour: PieceColour::White })
-        ));
-        assert!(matches!(board.board[4][3], Square::Empty));
-        assert!(matches!(board.board[4][3], Square::Full(Piece { kind: PieceKind::Pawn, colour: PieceColour::Black })));
-
-    }
-    
-
-
-
-
-
-    #[test]
-    fn test_rook_moves() {
-        init();
-        let mut board = BoardState::new();
-
-        // Place a white rook on a1.
-        board.board[7][0] = Square::Full(Piece {
-            kind: PieceKind::Rook,
-            colour: PieceColour::White,
-        });
-
-        // Clear surrounding squares to test movement.
-        for row in 0..7 {
-            board.board[row][0] = Square::Empty; // Clear the file above the rook
-        }
-        for col in 1..8 {
-            board.board[7][col] = Square::Empty; // Clear the rank to the right
-        }
-
-        let moves = board.valid_moves(7, 0, None);
-        
-        // Rook should move to all squares along the rank and file.
-        assert!(moves.iter().any(|m| m.to == (6, 0))); // Move up
-        assert!(moves.iter().any(|m| m.to == (7, 7))); // Move right
-        assert!(moves.iter().any(|m| m.to == (7, 1))); // Move along rank
-        assert!(moves.iter().any(|m| m.to == (0, 0))); // Move to top of file
+        }));
     }
 
     #[test]
     fn test_knight_moves() {
         init();
+
         let mut board = BoardState::new();
 
-        // Place a white knight on b1.
-        board.board[7][1] = Square::Full(Piece {
-            kind: PieceKind::Knight,
-            colour: PieceColour::White,
-        });
+        // Place a white knight at d4 (square 27)
+        board.white_knights.set(27);
+        board.all_white.set(27);
+        board.all_pieces.set(27);
 
-        let moves = board.valid_moves(7, 1, None);
-        assert!(moves.iter().any(|m| m.to == (5, 0))); // Knight jump.
-        assert!(moves.iter().any(|m| m.to == (5, 2))); // Another knight jump.
-    }
+        tracing::info!("Set up board for knight at d4");
 
-    #[test]
-    fn test_bishop_moves() {
-        init();
-        let mut board = BoardState::new();
+        let moves = board.generate_moves();
 
-        // Clear the board for the test.
-        for row in 0..BOARD_SIZE {
-            for col in 0..BOARD_SIZE {
-                board.board[row][col] = Square::Empty;
+        // Log generated moves for knights
+        for m in &moves {
+            if m.from == 27 {
+                tracing::debug!(?m, "Generated knight move");
             }
         }
 
-        // Place a white bishop on c1.
-        board.board[7][2] = Square::Full(Piece {
-            kind: PieceKind::Bishop,
-            colour: PieceColour::White,
-        });
+        // Expected moves from d4
+        let expected_moves = vec![
+            ChessMove { from: 27, to: 44, promotion: None }, // f5
+            ChessMove { from: 27, to: 42, promotion: None }, // e5
+            ChessMove { from: 27, to: 37, promotion: None }, // c6
+            ChessMove { from: 27, to: 33, promotion: None }, // c3
+            ChessMove { from: 27, to: 17, promotion: None }, // b6
+            ChessMove { from: 27, to: 21, promotion: None }, // b3
+            ChessMove { from: 27, to: 12, promotion: None }, // e2
+            ChessMove { from: 27, to: 10, promotion: None }, // f2
+        ];
 
-        let moves = board.valid_moves(7, 2, None);
-
-        // Ensure the bishop can move diagonally to the expected squares.
-        assert!(moves.iter().any(|m| m.to == (4, 5))); // Diagonal movement.
-        assert!(moves.iter().any(|m| m.to == (3, 6))); // Another diagonal.
+        // Check if all expected moves are in the generated moves
+        for m in expected_moves {
+            assert!(
+                moves.contains(&m),
+                "Missing expected move: {:?}, generated moves: {:?}",
+                m,
+                moves
+            );
+        }
     }
 
+    #[test]
+    fn test_pawn_moves_black() {
+        init();
+        let mut board = BoardState::new();
+        board.to_move = PieceColour::Black;
+
+        let moves = board.generate_moves();
+
+        // Test single pawn move forward
+        assert!(moves.contains(&ChessMove {
+            from: 48, // a7
+            to: 40,   // a6
+            promotion: None,
+        }));
+
+        // Test double pawn move from starting position
+        assert!(moves.contains(&ChessMove {
+            from: 48, // a7
+            to: 32,   // a5
+            promotion: None,
+        }));
+    }
 
     #[test]
-    fn test_king_moves() {
+    fn test_initial_setup() {
+        init();
+        let board = BoardState::new();
+
+        // Ensure pieces are in starting positions
+        assert!(board.white_pawns.is_set(8)); // a2
+        assert!(board.black_pawns.is_set(48)); // a7
+        assert!(board.white_rooks.is_set(0)); // a1
+        assert!(board.black_rooks.is_set(56)); // a8
+        assert!(board.white_king.is_set(4)); // e1
+        assert!(board.black_king.is_set(60)); // e8
+    }
+
+    #[test]
+    fn test_castling_moves() {
         init();
         let mut board = BoardState::new();
 
-        // Place a white king on e1.
-        board.board[7][4] = Square::Full(Piece {
-            kind: PieceKind::King,
-            colour: PieceColour::White,
-        });
+        // Remove obstructing pieces
+        board.all_pieces.clear(5); // f1
+        board.all_pieces.clear(6); // g1
+        board.all_pieces.clear(1); // b1
+        board.all_pieces.clear(2); // c1
+        board.all_pieces.clear(3); // d1
 
-        // Confirm the square in front of the King is occupied by a Pawn.
-        board.board[6][4] = Square::Full(Piece {
-            kind: PieceKind::Pawn,
-            colour: PieceColour::White,
-        });
+        // Set explicit castling rights
+        board.update_castling_rights(true, true, true, true);
 
-        println!("Board state: {:?}", board.board);
+        let moves = board.generate_moves();
 
-        let moves = board.valid_moves(7, 4, None);
-        println!("Generated moves: {:?}", moves);
+        // Validate kingside castling
+        assert!(
+            moves.contains(&ChessMove { from: 4, to: 6, promotion: None }),
+            "Kingside castling move is missing"
+        );
 
-        // Assert the King cannot move to (6, 4).
-        assert!(!moves.iter().any(|m| m.to == (6, 4)));
+        // Validate queenside castling
+        assert!(
+            moves.contains(&ChessMove { from: 4, to: 2, promotion: None }),
+            "Queenside castling move is missing"
+        );
     }
+
+    #[test]
+    fn test_en_passant() {
+        init();
+
+        let mut board = BoardState::new();
+
+        // Reset all bitboards to ensure a clean setup
+        board.white_pawns.0 = 0;
+        board.all_pieces.0 = 0;
+        board.all_white.0 = 0;
+        board.all_black.0 = 0;
+
+        board.print_board();
+
+        // Set up white pawn on e5
+        board.white_pawns.set(36); // e5
+        board.all_pieces.set(36);
+        board.all_white.set(36);
+
+        board.print_board();
+
+        // Set up black pawn on d5 (moved from d7)
+        board.black_pawns.set(35); // d5
+        board.all_pieces.set(35);
+        board.all_black.set(35);
+
+        // Set en passant square
+        board.en_passant_square = Some(43); // d6
+
+        // Print the board for debugging
+        board.print_board();
+
+        // Generate moves for white
+        board.to_move = PieceColour::White;
+        let moves = board.generate_moves();
+
+        // Check for en passant move
+        assert!(moves.contains(&ChessMove {
+            from: 36, // e5
+            to: 43,  // d6 (en passant capture)
+            promotion: None,
+        }), "En passant capture is missing");
+    }
+
+    
 }
