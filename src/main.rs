@@ -7,6 +7,7 @@ mod pieces;
 mod game_logic;
 mod moves;
 mod zorbist;
+mod history;
 
 fn main() {
 

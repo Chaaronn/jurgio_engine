@@ -88,9 +88,6 @@ pub struct BoardState {
     pub en_passant_square: Option<usize>,
 }
 
-
-
-
 impl BoardState {
     pub fn new() -> Self {
         let mut board = BoardState {
@@ -311,11 +308,12 @@ impl BoardState {
     pub fn update_castling_rights(&mut self, wk: bool, wq: bool, bk: bool, bq: bool) {
         self.castling_rights = [wk, wq, bk, bq];
     }
+
     /// Check if castling kingside is allowed for the current player.
     pub fn can_castle_kingside(&self, colour: PieceColour) -> bool {
-        let (king_square, rook_square, empty_squares) = match colour {
-            PieceColour::White => (4, 7, [5, 6]),
-            PieceColour::Black => (60, 63, [61, 62]),
+        let (king_square, rook_square, empty_squares, check_squares) = match colour {
+            PieceColour::White => (4, 7, [5, 6], [4, 5, 6]),
+            PieceColour::Black => (60, 63, [61, 62], [60, 61, 62]),
         };
 
         let rights = match colour {
@@ -325,28 +323,26 @@ impl BoardState {
 
         rights
             && empty_squares.iter().all(|&sq| !self.all_pieces.is_set(sq))
-            && self.is_square_safe(king_square)
-            && self.is_square_safe(king_square + 1)
-            && self.is_square_safe(king_square + 2)
+            && check_squares.iter().all(|&sq| self.is_square_safe(sq))
+            && self.validate_castling_pieces(king_square, rook_square)
     }
 
     /// Check if castling queenside is allowed for the current player.
     pub fn can_castle_queenside(&self, colour: PieceColour) -> bool {
-        let (king_square, rook_square, empty_squares) = match colour {
-            PieceColour::White => (4, 0, [1, 2, 3]),
-            PieceColour::Black => (60, 56, [57, 58, 59]),
+        let (king_square, rook_square, empty_squares, check_squares) = match colour {
+            PieceColour::White => (4, 0, [1, 2, 3], [2, 3, 4]),
+            PieceColour::Black => (60, 56, [57, 58, 59], [58, 59, 60]),
         };
-
+    
         let rights = match colour {
             PieceColour::White => self.castling_rights[1],
             PieceColour::Black => self.castling_rights[3],
         };
-
+    
         rights
             && empty_squares.iter().all(|&sq| !self.all_pieces.is_set(sq))
-            && self.is_square_safe(king_square)
-            && self.is_square_safe(king_square - 1)
-            && self.is_square_safe(king_square - 2)
+            && check_squares.iter().all(|&sq| self.is_square_safe(sq))
+            && self.validate_castling_pieces(king_square, rook_square)
     }
 
     /// Helper to check if king and rook are in the correct positions for castling.
@@ -622,6 +618,7 @@ impl BoardState {
         }
         false
     }
+
 }
 
 pub struct BitBoardIter {
@@ -793,6 +790,36 @@ mod tests {
         board.all_pieces.clear(2); // c1
         board.all_pieces.clear(3); // d1
         assert!(board.can_castle_queenside(PieceColour::White));
+    }
+
+
+    #[test]
+    fn test_castling_kingside_under_attack() {
+        let mut board = BoardState::new();
+
+        // Clear squares for kingside castling
+        board.all_pieces.clear(5); // f1
+        board.all_pieces.clear(6); // g1
+
+        // Place an opposing rook attacking f1
+        board.set_piece_at(37, Piece { kind: PieceKind::Rook, colour: PieceColour::Black });
+
+        assert!(!board.can_castle_kingside(PieceColour::White), "Should not allow kingside castling if f1 is under attack");
+    }
+
+    #[test]
+    fn test_castling_queenside_under_attack() {
+        let mut board = BoardState::new();
+
+        // Clear squares for queenside castling
+        board.all_pieces.clear(1); // b1
+        board.all_pieces.clear(2); // c1
+        board.all_pieces.clear(3); // d1
+
+        // Place an opposing bishop attacking c1
+        board.set_piece_at(42, Piece { kind: PieceKind::Bishop, colour: PieceColour::Black });
+
+        assert!(!board.can_castle_queenside(PieceColour::White), "Should not allow queenside castling if c1 is under attack");
     }
 
 
